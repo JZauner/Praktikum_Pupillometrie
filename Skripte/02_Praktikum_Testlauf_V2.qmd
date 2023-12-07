@@ -366,8 +366,8 @@ head(data_red, 3)  %>% gt()
 
 #Nun sind alle Daten vor dem Startzeitpunkt negativ und alle danach positiv mit Relation zum ersten Lichtreiz
 #Hierfür fertigen wir eine Basis Sequenz an
-Sequenzdauer <- 31.51
-Sequenz <- seq(from = -2, to = Sequenzdauer -2 - 1/50, by = 1/50)
+Sequenzdauer <- 31.50
+Sequenz <- seq(from = -2, to = Sequenzdauer -2, by = 1/50)
 tail(Sequenz)
 
 #Im nächsten Schritt soll eingeteilt werden im wievielten Durchlauf man sich befindet
@@ -382,7 +382,7 @@ data_red2 <- data_red %>%
   #...Begrenzen die maximale Länge auf die Sequenz
   slice_head(n = length(Sequenz)) %>% 
   #...und fügen die Sequenzspalte hinzu
-  mutate(Time_run = Sequenz) %>% 
+  mutate(Time_run = Sequenz[seq_along(run)]) %>% 
   #...Abschließend benötigt es noch eine Einteilung ob wir einen roten oder einen blauen Lichtreiz vorliegen haben
   mutate(Stimulus = case_when(run >=1 & run <= 5 ~ "red",
                               run >5 & run <=10 ~ "blue")) %>% 
@@ -495,7 +495,7 @@ Nun können wir den mittleren Kurvenverlauf ermitteln, basierend auf den je fün
 #| message: false
 
 #Skalierung für den unteren Wert im Plot
-lower <- 50
+lower <- 40
 
 #Erstellen wir zunächst eine neue Variable für die Daten und erstellen diese auf Basis der alten
 data_mittel <- data_scaled %>% 
@@ -557,14 +557,17 @@ Plot8
 Kurvenverläufe wie wir sie im letzten als Mittelwerte gebildet haben sind visuell gut zu interpretieren. In Veröffentlichungen und Abschlussarbeiten geht es häufig neben diesen qualitativen Darstellungen auch um die quantitative Auswertung. Dazu müssen Parameter aus den Daten extrahiert werden. Der für die chromatische Pupillometrie typischste Parameter ist die Konstriktion 6 Sekunden nach Lichtreizende - im Vergleich roter zu blauer Stimulus ($P_6$). Weiterhin ist die `Area under the Curve` ($AUC$) ein typischer Vergleichsparameter. Dabei werden einfach die Flächen unter der roten und der blauen Kurve (nach Lichtreizende) miteinander verglichen. Das Konstriktionsmaximum der Pupillen ($C_{max}$) wird auch gelegentlich verglichen, wobei es kein spezifischer Marker für den Einfluss der ipRGC auf die Pupille ist. Wir werfen in den nächsten Abschnitten einen Blick auf alle diese Parameter, die dann im folgenden Kapitel auch statistisch ausgewertet werden. Aus Gründen der Einfachheit gehen wir im folgenden nur noch auf die Skalierungsmethode 1 ein.
 
 ```{r}
+
 #Generieren wir zunächst die drei Parameter für die Mittelwertskurven. Das erlaubt eine schönere Darstellung
-data_mittel_params <- data_mittel %>% 
-  #Die Mittelwertsdaten sind bereits gruppiert nach dem Stimulus. Dies muss also nicht extra erfolgen
-  summarize(
+data_mittel_params <- data_scaled %>% group_by(Stimulus, run) %>% 
+    #Die Mittelwertsdaten gruppiert nach dem Stimulus und dem Durchlauf
+    summarize(
         #Die Fläche unterhalb der Kurve ist leicht zu bestimmen. Wir kumulieren hier lediglich alle Durchmesser auf und teilen die Summe durch die Samplingrate von 50 Messungen pro Sekunde. Wir beschränken uns hier auf die Fläche nach dem Lichtreizende, d.h. alles über Sekunde 1. Im Ergebnis erhalten wir %*Sekunden als Fläche. Man kann diese folgendermaßen interpretieren: 1 %*Sekunde ist eine maximal geöffnete Pupille für eine Sekunde - oder eine halb geöffnete Pupille für zwei Sekunden. Ein größerer Wert entspricht einer weiter geöffneten Pupille über den gesamten Messverlauf hinweg
     AUC = sum(Diameter[Time >= 2])/50,
     #Die Konstriktion 6 Sekunden nach Lichtreizende ist ebenfalls leicht zu bestimmen. Wir nehmen alle Durchmesser die größer gleich bei 7 Sekunden liegen (6 Sekunden + Lichtreizdauer 1 S) und kleiner 8 Sekunden sind. Von diesen Werten nehmen wir den Durchschnitt
-    P_6 = mean(Diameter[Time >= 7 & Time < 8]))
+    P_6 = mean(Diameter[Time >= 7 & Time < 8])) %>% 
+  #Nun muss lediglich noch der Mittelwert gebildet werden.
+  summarize(across(.fns = mean))
 
     #Das Konstriktionsmaximum ist vermeintlich leicht - es ist lediglich der minimale Pupillendurchmesser zu suchen - allerdings ist dieser nicht in jedem Durchlauf an der gleichen Zeit. Deshalb kann es falsch sein, den minimalen Durchmesser vom Mittelwert zu nehmen. Stattdessen nehmen wir den minimalen Durchmesser jedes Durchlaufs und mitteln diesen Wert
 data_mittel_params2 <- data_scaled %>% 
@@ -587,8 +590,8 @@ Table0 <-
   select(!X_C_max) %>% 
   gt(caption = "Parameteraufstellung") %>% 
   #Diese Befehle sorgen für eine passende Formatierung der Zahlen
-  fmt_percent(columns = 3:4, decimals = 1, scale_values = FALSE) %>% 
-  fmt_number(columns = 2, decimals = 0) %>% 
+  fmt_percent(columns = 4:5, decimals = 1, scale_values = FALSE) %>% 
+  fmt_number(columns = 3, decimals = 0) %>% 
   #Dieser Befehl passt die Bezeichnung der Spalten an
   cols_label(C_max = md("C<sub>max</sub>"),
              P_6 = md("P<sub>6</sub>")) %>% 
@@ -761,8 +764,9 @@ Diese signifikanten Unterschiede können wir auch zeigen mit einem kombinierten 
 
 ```{r}
 
+
 #Hierzu benötigen wir zunächst einen Hilfsdatensatz. Diesen manipulieren wir so, dass wir Pro Parameter eine Spalte mit dem roten und eine mit dem blauen Stimulus haben
-Stat_Mittel <- data_mittel_params %>% select(-X_C_max) %>% 
+Stat_Mittel <- data_mittel_params %>% select(-X_C_max, -run) %>% 
   pivot_longer(cols = -Stimulus, names_to = "Parameter") %>% 
   pivot_wider(names_from = "Stimulus") %>% 
       #für den Plot müssen die Parameterbezeichnungen noch angepasst werden
@@ -900,36 +904,32 @@ Im letzten Schritt müssen unsere Ergebnisse ansprechend aufbereitet und zusamme
 
 Bitte legen Sie hierzu den Versuchsleiter-, Auswerter-, und Probandennamen fest. Die Befehle:
 
-`Versuchsleiter <- "Versuchsleitername"`
+`versuchsleiter <- "Versuchsleitername"`
 
-`Proband <- "Probandenname"`
+`proband <- "Probandenname"`
 
-`Auswerter <- "Auswertername"`
+`auswerter <- "Auswertername"`
 
 ```{r, include = FALSE}
 #Variablen für die Auswertung
-Versuchsleiter <- "Versuchsleiter"
-Proband <- "Proband"
-Auswerter <- "Auswerter"
-
-#Speichern der bisherigen Ergebnisse
-save.image(file="Workspace.RData")
+versuchsleiter <- "Versuchsleiter"
+proband <- "Proband"
+auswerter <- "Auswerter"
 
 #Festlegen einiger temporärer Dateien
 filepath_tmp <- getwd()
 filename <- "Table.png"
 filename2 <- "Table0.png"
 
-#Rendern eines PDFs auf Basis eines eigenen Quarto-Dokuments, welches als PDF, nicht als HTML gespeichert wird. Dieses Dokument bekommt die vorher gespeicherten Ergebnisse übergeben
-quarto::quarto_render("Hilfsdatei.qmd",
-                      output_format = "pdf",
-                      output_file = "Pupille_Praktikum.pdf",
-                      execute_params = list(author = Versuchsleiter,
-                                            proband = Proband,
-                                            auswerter = Auswerter,
-                                            filepath_tmp = filepath_tmp,
-                                            filename = filename,
-                                            filename2 = filename2))
+#Speichern der bisherigen Ergebnisse
+save.image(file="Workspace.RData")
+
+```
+
+Gehen Sie nun zur Datei `03_Hilfsdatei.qmd` und führen Sie diese aus.
+Klicken Sie danach auf den Render Knopf um dieses Dokument auszuführen.
+
+```{r, echo = FALSE}
 
 #Löschen der entstandenen temporären Dateien
 L_Dateien <- c(
@@ -939,12 +939,7 @@ L_Dateien <- c(
 )
 walk(L_Dateien, file.remove)
 
-# rmarkdown::render("Hilfsdatei.rmd",
-#                   output_file = "Pupille_Praktikum.pdf",
-#                       params = list(author = Versuchsleiter,
-#   proband= Proband))
-
 ```
 
-<iframe src="Pupille_Praktikum.pdf" width = "100%" height = "1050px" data-external="1"></iframe>
+<iframe src="03_Hilfsdatei.pdf" width = "100%" height = "1050px" data-external="1"></iframe>
 

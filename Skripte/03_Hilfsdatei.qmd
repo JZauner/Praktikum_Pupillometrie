@@ -16,13 +16,6 @@ editor: source
 execute:
   warning: false
   echo: false
-params:
-  author: "Versuchsleiter"
-  proband: "Proband"
-  auswerter: "Auswerter"
-  filepath_tmp: "`r getwd()`"
-  filename: "Table.png"
-  filename2: "Table0.png"
 ---
 \sffamily
 \thispagestyle{empty}
@@ -43,6 +36,7 @@ library(ggforce)
 library(patchwork)
 library(png)
 load(file="Workspace.RData")
+
 theme_set(theme_cowplot(font_size = 10.5, font_family = "sans"))
 ```
 
@@ -110,9 +104,9 @@ Table0 %>%
   tab_caption(caption = NA) %>% 
   tab_options(column_labels.hidden = TRUE) %>% 
   tab_style(style = cell_text(weight = "bold"), location = (cells_body())) %>%
-  gtsave(file = params$filename2, path = params$filepath_tmp)
+  gtsave(file = filename2, path = filepath_tmp)
 
-Tableinset <- png::readPNG(paste0(params$filepath_tmp, "/", params$filename2), native = TRUE)
+Tableinset <- png::readPNG(paste0(filepath_tmp, "/", filename2), native = TRUE)
 
 prop <- dim(Tableinset)[1]/dim(Tableinset)[2]
 
@@ -165,13 +159,13 @@ Stat_Analysis %>% arrange(Parameter) %>%
   tab_style(style = cell_text(size = "large", weight = "bold"), location = cells_title(groups = "title")) %>%
   tab_style(style = cell_text(weight = "bold"), location = list(cells_body(rows = 1))) %>%
   tab_style(style = cell_text(size = 18), location = list(cells_body(rows = 1:3))) %>% 
-   gtsave(file = params$filename, path = params$filepath_tmp, vwidth = 800)
+   gtsave(file = filename, path = filepath_tmp, vwidth = 800)
 
 ```
 
 \begin{figure}[!h]
   \centering
-  \includegraphics[width=6.3in]{`r paste0(params$filepath_tmp, "/", params$filename)`}
+  \includegraphics[width=6.3in]{`r paste0(filepath_tmp, "/", filename)`}
 \end{figure}
 
 
@@ -179,4 +173,4 @@ Stat_Analysis %>% arrange(Parameter) %>%
 \textcolor{HM}{\rule{17.78cm}{0.5mm}}
 
 \small\emph{Erstellt `r Sys.Date()`} 
-\hfill\small\emph{Versuchsleiter: `r params$author`, Proband: `r params$proband`, Auswerter: `r params$auswerter`}
+\hfill\small\emph{Versuchsleiter: `r versuchsleiter`, Proband: `r proband`, Auswerter: `r auswerter`}

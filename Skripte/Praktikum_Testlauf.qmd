@@ -1,0 +1,945 @@
+---
+title: "Pupillometrie Praktikum"
+author: "Johannes Zauner"
+format: 
+  html:
+    self-contained: true
+    toc: true
+    number-sections: true
+    code-overflow: wrap
+    code-link: true
+    code-tools: true
+    code-fold: TRUE
+execute: 
+  warning: false
+  message: false
+---
+
+## Einführung
+
+In diesem Dokument wird die Auswertung eines Pupillometrie-Datensatzes durchgeführt, der im Rahmen eines Praktikums aufgezeichnet wurde. Im Rahmen der Auswertung werden die Daten strukturiert, Artefakte entfernt, Datenglättung und Datenmittellung durchgeführt, bevor die Ergebnisse statistisch ausgewertet werden. Die Auswertung findet Schritt-für-Schritt statt.
+
+Zweck dieser Auswertung ist es typische Schritte einer Datenauswertung darzustellen und deren Sinn und Zweck herauszuarbeiten. Dabei sind die grundlegenden Fragestellungen universell, d.h. auf andere Auswertungen übertragbar:
+
+-   *"Wie mache ich aus dieser langen Kette an Messdaten interpretierbare Auswertungsdaten?"*
+-   *"Wie entferne ich Artefakte aus meinen Daten?"*
+-   *"Welche Werte muss ich generieren bzw. herausziehen, anhand derer ich meine Forschungsfrage beantworten kann?"*
+-   *"Wie kann ich diese Werte statistisch auswerten?"*
+-   *"Wie kann ich meine Auswertung gesamthaft aufbereiten?"*
+
+Die Auswertung ist dabei wie eine Speerspitze - breit an der Basis/am Anfang und Messerscharf an der Spitze, am Ende. Das heißt wir werden von sehr allgemeinen, unspezifischen Daten immer konkreter, bis die relevanten Aussagen für uns (und den Leser z.B. einer Abschlussarbeit) klar vorliegen.
+
+```{r}
+#| output: false
+# Lade die folgenden Pakete
+library(here)
+library(tidyverse)
+library(slider)
+library(ggtext)
+library(cowplot)
+library(lubridate)
+library(plotly)
+library(gghighlight)
+library(numbers)
+library(glue)
+library(ggforce)
+library(gt)
+library(ggpattern)
+library(broom)
+library(mgcv)
+library(itsadug)
+library(patchwork)
+```
+
+## Daten importieren
+
+Der erste wichtige Schritt jeder Auswertung ist es, die Daten in das Programm zu importieren. Viele Messgeräte exportieren sogenannte CSV- oder Text-Dateien. Die "Herausforderung" an diesen Dateien beim Import ist sicher zu sein, dass die folgenden Punkte berücksichtigt sind:
+
+-   *Welchen Dezimaltrenner besitzen Zahlen?* I.d.R. im Deutschen \[,\], im Englischen \[.\].
+
+-   *Welchen Spaltentrenner besitzen tabellarische Aufstellungen?* Üblich sind \[,\] (CSV für Comma-separated-values), \[;\] (vor allem im Deutschen), \[\\\] und \[ \] (Tabzeichen)
+
+-   *Gibt es Abschnitte in der Datei, die unterschiedlichen Formatierungsvorgaben folgen, z.B. Header oder Footer?* Diese müssen entweder entfernt werden vor dem Import oder beim importieren übersprungen werden.
+
+Im folgenden Abschnitt muss der Dateiname im Skript angepasst werden mit dem Befehl:
+
+`Dateiname <- "Hier steht der Dateiname.txt"`
+
+Beim Import wird davon ausgegangen, dass es keinen Header mehr gibt, ausser den Spaltenüberschriften. D.h. alle Metainformationen müssen aus der Datei gelöscht werden.
+
+```{r}
+
+Dateiname <- "Med_LS22-23.txt"
+
+#Erstelle die Variable "data" und befülle sie mit dem folgenden...
+data <- 
+  #...Datenimport einer Tab-separierten Datei...
+  read_tsv(here("Daten", Dateiname), 
+           show_col_types = FALSE) %>% 
+  #...und lösche die Spalten Type und Set
+  select(-Type, -Set) 
+
+# Die Spaltennamen sind teils kryptisch, daher überschreiben wir die Spalten mit Time, X, und Y
+colnames(data) <- c("Time", "X", "Y")
+
+#Dann stellen wir die ersten sechs Zeilen des Datensatzes dar, um zu sehen ob dieser plausibel ist.
+head(data) %>% gt()
+
+#Für die Darstellung der Rohdaten möchten wir einen aussagekräftigen Titel, der anhand der Farbgebung bereits als Legende dient. Daher ist im folgenden Titel ein wenig HTML-Formatierung eingearbeitet.
+P1_title <- "Pupillendurchmesser in <span style = 'color:blue'>X</span> und in <span style = 'color:red'>Y</span>-Richtung"
+
+#Plotdarstellung unseres Rohdatensatzes. Nimm den Datensatz data...
+data %>% 
+  #...und erstelle damit einen Plot, bei dem die Zeit (Time) auf der x-Achse liegt ...
+  ggplot(aes(x=Time))+ 
+  #...und füge eine Liniengrafik für den Pupillendurchmesser in X-Richtung in blau...
+  geom_line(aes(y=X), col = "blue") + 
+  #...und eine für die Y-Richtung in rot ein.
+  geom_line(aes(y=Y), col = "red") +
+  #...Benenne dann die X- und Y-Achse um und füge einen Titel hinzu, den wir bereits vordefiniert haben.
+  labs(x = "Zeit", y = "Pupillendurchmesser (Pixel)", title = P1_title)+
+  #...Das cowplot Thema macht einige Grundeinstellungen des Plots gefälliger.
+  theme_cowplot()+
+  #...Mit der Umwandlung des Plot-Titels in einen textbox_simple kann diese die HTML-Formatierung verarbeiten.
+  theme(plot.title = element_textbox_simple())
+
+```
+
+## Daten bereinigen
+
+Sind die Daten importiert beginnt die richtige Arbeit. Nun müssen Die Daten aus der Form, wie sie das Messgerät aufzeichnet (nicht leicht interpretierbar) von Artefakten bereinigt, in sinnvolle Teile/Abschnitte geteilt, skaliert, und gemittelt werden (leicht interpretierbar). Jeder Teilschritt wird dabei visualisiert, um zu prüfen, ob die Bereinigung erfolgreich war.
+
+### Mittelwert der beiden Richtungen X und Y
+
+Zunächst reduzieren wir die Komplexität des Datensatzes, indem wir den Pupillendurchmesser in X- und Y-Richtung mitteln.
+
+```{r}
+#Für die Bildung des Mittelwerts überschreiben wir den Datensatz data...
+data <- 
+  #...und nehmen dafür als Basis den alten data-Datensatz, für den wir für jede einzelne Zeile (rowwise) einen neuen Wert berechnen...
+  data %>% rowwise() %>% 
+  #...in diesem Datensatz erstellen wir eine neue Spalte mit dem Namen Diameter und mit dem Mittelwert von X und Y
+  mutate(Diameter = (X+Y)/2) %>% ungroup() %>% 
+  # Eine langsame aber allgemeinere Berechnung wäre über Diameter = mean(c_across(cols = c(X, Y))) möglich gewesen - das ist weniger umständlich wenn es mehr Spalten werden
+  #...Nun entfernen wir noch die Spalten X und Y, die wir nicht mehr benötigen
+  select(-X, -Y)
+
+#Die Ergebnisse wollen wir in einem Plot darstellen. Dieses Mal speichern wir den Plot jedoch in einer Variable. Wie zuvor geben wir dazu zunächst unseren Datensatz weiter...
+Plot2 <- data %>% 
+  #...und erstelle damit einen Plot, bei dem die Zeit (Time) auf der x-Achse liegt ...
+  ggplot(aes(x=Time))+ 
+  #...und füge eine Punktwolke für den Pupillendurchmesser hinzu...
+  geom_point(aes(y=Diameter)) + 
+  #...Benenne dann die X- und Y-Achse um und füge einen Titel hinzu.
+  labs(x = "Zeit", y = "Pupillendurchmesser (Pixel)", title = "Pupillendurchmesser über die Messzeit")+
+  #...Das cowplot Thema macht einige Grundeinstellungen des Plots gefälliger.
+  theme_cowplot()
+
+# Wir rufen den Plot einfach über die Variable auf
+Plot2
+
+```
+
+### Zeitachse
+
+Das Problem der Zeitachse ist, dass diese nur maschinenlesbar ist und dass der Messrechner nicht die korrekte Zeit anzeigt. Mit dem Wissen, dass der Messrechner mit einer Frequenz von 50 Hz sampled, können wir allerdings eine sinnvolle Zeitachse generieren, indem wir die erste Messung auf 0 setzen und die restlichen Werte durch 50 teilen. Es entsteht eine leicht leserliche Zeitachse, die bei 0 Sekunden beginnt und über das Experiment hinweg dauert.
+
+```{r}
+# Wir beginnen wieder bei unserem Datensatz data...
+data <- data %>% 
+  #...und mutieren die Zeitachse so, dass der kleinste, d.h. der erste Wert, auf 0 gesetzt wird, und von dort weg nach oben gezählt wird.
+  mutate(Time = 0:(length(Time)-1)) %>% 
+  #...Die Zeitachse muss dann nur noch durch 50 geteilt werden für eine Auflösung in Sekunden.
+  mutate(Time = Time/50)
+
+#Um den Plot neu aufzurufen müssen wir nun nicht jeden Plot neu generieren, es reicht vielmehr, dass wir den Datensatz des Plots aktualisieren
+Plot2$data <- data
+# Im Anschluss überschreiben wir die X-Achse, damit sie die Einheit reflektiert.
+Plot2 <- Plot2 + labs(x= "Zeit (s)")
+
+Plot2
+
+```
+
+### Unplausible Werte: Grenzwerte
+
+Nun müssen wir unplausible Werte anhand von Grenzwerten entfernen. Die `0`-Werte sind sicherlich unplausibel, ggf. gibt es aber auch andere Punkte, die die man alleine aufgrund ihres Wertes entfernen kann. Dies wird hier festgelegt. Wählen Sie aus dem folgenden Plot per `Mouseover` sinnvolle obere und untere Grenzwerte aus
+
+```{r}
+
+#Zunächst kann es nützlich sein, per Mouseover zu sehen welchen Wert einzelne Punkte genau haben
+#Hierzu eignet sich eine Umwandlung des Plots von einer Grafik zu einem interaktiven Plot.
+ggplotly(Plot2)
+
+```
+
+Nach Sichtung des Plots kann ein Grenzwert für die obere und untere Schwelle festgelegt werden mit folgenden Befehlen:
+
+`Schwelle_oben <- XX`
+
+`Schwelle_unten <- YY`
+
+```{r}
+#| warning: false
+
+#Festlegung der oberen Schwelle
+Schwelle_oben <- 78
+#Festlegung der unteren Schwelle
+Schwelle_unten <- 39.5
+
+# Wir wollen einen neuen Plot erstellen, in dem die einbezogenen und ausgelassenen Daten einbezogen werden.
+# Zunächst legen wir einen neuen Titel fest für den Plot, auch hier wird wieder etwas HTML verwendet.
+P2_title <- "Pupillendurchmesser mit <span style = 'color:red'>oberer</span> und <span style = 'color:blue'>unterer</span> Schwelle, sowie <span style = 'color:grey'>verworfenen Messpunkten</span>"
+
+# Wir nehmen als Basis den alten Plot...
+Plot2 + 
+  #...und ergänzen eine horizontale Line für den oberen Schwellenwert...
+  geom_hline(aes(yintercept = Schwelle_oben), col = "red") + 
+  #...und eine für den unteren Schwellenwert hinzu.
+  geom_hline(aes(yintercept = Schwelle_unten), col = "blue") +
+  #...Die ausserhalb des Grenzwert liegenden Daten grauen wir aus mit einer Logikabfrage
+  gghighlight(Diameter > Schwelle_unten & Diameter < Schwelle_oben) +
+  #Schließlich müssen wir den Titel anpassen
+  labs(title = P2_title) +
+  #Da der Titel überstehen würde und auch sonst kein HTML interpretiert, erfolgt wieder eine Umwandlung in eine Textbox_Simple
+  theme(plot.title = element_textbox_simple())
+
+```
+
+Schlussendlich müssen wir die vorangehend dargestellten Messpunkte auch aus unserem Datenpool entfernen.
+
+```{r}
+# Hierzu erstellen wir eine neue Datenvariable - das erlaubt uns im Zweifel immer auf die Rohdaten zurückzugreifen.
+data_red <- 
+  #...Die Basis hierfür ist natürlich wieder unser Ausgangsdatensatz.
+  data %>% 
+  #...In diesem werden alle Daten als NA gekennzeichnet, die nicht zutreffend sind.
+  # Achtung: Die Daten werden nicht gekürzt - denn wir wollen für jeden Zeitpunkt einen Datenpunkt haben, auch wenn dieser als ungültig markiert ist.
+  mutate(Diameter = ifelse(Diameter > Schwelle_unten & Diameter < Schwelle_oben, Diameter, NA))
+
+# Wir können leicht sehen, dass dieser Schritt die Daten verändert hat, wenn wir die Daten sortieren
+# Alter Datensatz
+data %>% arrange(Diameter) %>% head(3) %>% gt()
+# Neuer Datensatz
+data_red %>% arrange(Diameter) %>% head(3) %>% gt()
+
+# Wenn wir nun wissen möchten, welcher Anteil der Daten dadurch entfernt wurde, so ist auch dies einfach möglich.
+# Wir beginnen bei dem neuen Datensatz...
+Anteil_entfernt <- data_red %>% 
+  #...und erstellen eine Zusammenfassung. Die Zusammenfassung soll eine neue Variable erstellen, die Anteil_entfernt heißt...
+  summarize(Anteil_entfernt = 
+              #...Diese Variable zählt wie viele Datenpunkte noch da sind und teilt diese durch die Gesamtzahl an Datenpunkten.
+              (length(na.omit(Diameter))/n()) %>% 
+              #...Das Ergebnis daraus wird von eins abgezogen (damit wir die fehlenden Daten erhalten) und mit 100 multipliziert um auf Prozent zu kommen.
+              {(1 - . )*100} %>%
+              #...Schlussendlich wird das Ergebnis auf eine Nachkommastelle gerundet und der Einzelwert herausgezogen (pull).
+              round(digits = 1)) %>% pull(Anteil_entfernt)
+
+Anteil_entfernt
+
+```
+
+Auf Basis unserer Schwellenwerte wurden `r Anteil_entfernt`% der Daten entfernt.
+
+### Unplausible Werte: Zwischenwerte
+
+Auch innerhalb der Schwellenwerte gibt es unplausible Werte - z.B. "Perlenschnüre" von Date, wo beim Blinzeln schrittweise die von der Bilderkennung extrahierten Durchmesser geringer wurden. Diese Daten können mithilfe einer Glättung abgemildert werden. Hierzu werden gleitende Zeitfenster über die Daten geschoben und die Daten innerhalb dieses Zeitfensters angepasst. Im vorliegenden Fall kommt ein sogenannter Medianfilter zum Einsatz. D.h. bei einem Zeitfenster (z.B. 25 Punkte, d.h. 0,5 Sekunden) wird der mittelste Wert verwendet.
+
+Bitte legen Sie das Zeitfenster fest mit dem Befehl:
+
+`Zeitfenster <- XX`
+
+```{r}
+#| warning: false
+#| fig-width: 12
+#| fig-height: 5
+
+#Zunächst muss die Länge des Zeitfensters gewählt werden. Aus Signaltheoretischer Sicht eignen sich besonders Primzahlen für eine Fenstergröße
+#Hier werden die Primzahlen von 1 bis 100 gezeigt
+Primes(1, 100)
+
+#Nun kann einer der Werte für das Zeitfenster verwendet werden.
+Zeitfenster <- 37
+
+#Aus diesem Wert wird eine Anzahl Zellen vor und nach der Mitte des Zeitfensters berechnet
+#Mit dem Befehl ceiling wird der nächsthöhere ganzzahlige Wert verwendet. Das ist nur für den Fall relevant wenn Zeitfenster keine Primzahl und insb. keine ungerade Zahl ist.
+Zeitfenster_ende <- ceiling((Zeitfenster-1)/2)
+
+#Wir starten wieder bei unseren Daten...
+data_red <- data_red %>% 
+  #Und erstellen eine neue Spalte, die mit dem gleitenden Zeitfenster befüllt wird. Dessen Basis ist wieder der Durchmesser.
+  mutate(Diameter_med = slide_dbl(Diameter, 
+                                  #...Die Formel für das gleitende Zeitfenster ist der Median. Da regelmäßig fehlende Daten vorliegen, müssen wir eine Berechnung trotz NA erlauben
+                                  ~ median(.x, na.rm = TRUE), 
+                                  #...Die Vor- und nachgelagerten Zeitfenster ergeben sich aus der Variablen
+                                  .before = Zeitfenster_ende, .after = Zeitfenster_ende))
+
+#All das möchten wir nun in einem Plot darstellen. Dieser startet wieder bei den Daten und setzt Zeit auf die X-Achse, ausserdem wird cowplot wieder als Thema geführt, und wir brauchen gute Achsbeschriftungen - da wir damit noch regelmäßig arbeiten, erstellen wir einen Grundplot PlotX mit allen Basisbauteilen.
+
+PlotX <- data_red %>% 
+  ggplot(aes(x=Time)) +
+  theme_cowplot()+
+  labs(x= "Zeit (s)", y = "Pupillendurchmesser (Pixel)")+
+  theme(plot.title = element_textbox_simple())
+
+#Nun bauen wir auf diesem Plot auf
+Plot3 <- PlotX +
+  #...Dann ergänzen wir die unbereinigten Datenpunkte...
+  geom_point(aes(y=Diameter))+
+  #...gefolgt von der Medianfilterung.
+  geom_point(aes(y=Diameter_med), size = 0.8, col = "orange")+
+  #Nun benötigt es wieder einen guten Titel. Neben dem Text wollen wir auch das Zeitfenster benennen
+  labs(title = glue(
+    "Pupillendurchmesser vor- und <span style = 'color:orange'>nach</span> einer Median-Glättung 
+    mit einem Datenfenster von {Zeitfenster} Messpunkten"))
+
+Plot3
+
+```
+
+### Messwiederholungen aufteilen
+
+Nun haben wir einen Datensatz mit dem wir arbeiten können. Allerdings ist es immer noch eine lange Schnur an Messpunkten, wo eigentlich nur übereinanderliegende Kurven für rote und blaue Lichtreize sein sollten. Wir wissen folgendes:
+
+-   Vom ersten Lichtreiz ausgehend gibt es fünf rote und dann fünf blaue Lichtreize
+-   Jeder Lichtreiz dauert 1 Sekunde
+-   Die Dunkeladapationsperiode jedes Lichtreizes beträgt 30 Sekunden
+-   Vor dem ersten Lichtreiz liegen ca. 30 Sekunden. Genau kann das jedoch nicht im Vorhinein bestimmt werden, da der Protokollstart und der Pupillenaufzeichnungsstart separat vom Versuchsleiter festgelegt werden.
+
+Das heißt - vom Moment des ersten Lichtreizes an sind alle Zeiten im Experiment exakt bestimmbar. Lediglich der erste Lichtreiz muss manuell vom Auswerter bestimmt werden.
+
+Wählen Sie im folgenden Plot den Zeitpunkt des ersten Lichtreizes per `Mouseover` aus. Legen Sie dann diesen Startzeitpunkt fest mit dem Befehl:
+
+`Startzeitpunkt <- XX.X`
+
+```{r}
+#| fig-width: 12
+#| fig-height: 5
+#| warning: false
+
+#Im ersten Schritt sollte der ungefähre Zeitpunkt des ersten Lichtreizes anhand der ersten deutlichen Pupillenkonstriktion gesucht werden. Hierfür ist wieder das Mouseover sinnvoll
+ggplotly(Plot3)
+
+#Auf Basis des Mouseovers wird ein Zeitstempel festgelegt
+Startzeitpunkt <- 30.7
+#Eine Allgemeine Sequenzdauer wird hier definiert
+Sequenzdauer <- 31.5
+
+#Auf basis dieses Zeitstempels wird nun eine Grafik erzeugt die stärker in die Daten hineinzoomt, ausgehend von 5 Sekunden vor und 35 Sekunden nach dem angegebenen Startzeitpunkt
+
+Plot3 + 
+  # Der nächste Befehl zoomt entsprechend hinein und verwirft die restlichen Messpunkte (nur für den Plot)...
+  scale_x_continuous(limits = c(Startzeitpunkt - 5, Startzeitpunkt + Sequenzdauer+3.5))+
+  #...und dann wird ein Balken gezeigt, der den vermeintlichen Lichtreiz zeigt
+  annotate("rect",
+    #Der Balken muss 1 Sekunde breit sein, da der Lichtreiz so lange andauert
+    xmin = Startzeitpunkt, xmax = Startzeitpunkt + 1, 
+    #Der Balken muss zudem über die ganze vertikale gehen, weshalb wir uns am maximalen Pupillendurchmesser orientieren
+    ymin = 0, ymax = Inf,
+    #Nun sollte der Balken transparent sein und eine Farbe aufweisen
+     fill = "yellow2", alpha = 0.4) +
+  #...Und wir benötigen einen zweiten Balken 31 Sekunden später
+  annotate("rect",
+    xmin = Startzeitpunkt + Sequenzdauer, xmax = Startzeitpunkt + Sequenzdauer+1, 
+    ymin = 0, ymax = Inf,
+     fill = "yellow2", alpha = 0.4)+
+  #Zum Schluss noch ein angepasster Titel
+  labs(title = 
+         glue("Prüfung des Startzeitpunkts bei {Startzeitpunkt}s <br>inkl. <span style = 'color:yellow2'>angedeuteten Lichtreizen</span>"))
+
+```
+
+Ist der Startzeitpunkt plausibel, können auf Basis dieses Zeitstempels die restlichen Daten aufgeteilt werden. Falls nicht, gehen Sie zurück und ändern Sie den Startzeitpunkt entsprechend.
+
+```{r}
+#Wir beginnen mit unserem Datensatz...
+data_red <- data_red %>% 
+  #...und ergänzen eine neue Spalte, bei der die Zeit um den Startzeitpunkt verschoben wird (abzüglich 2 Sekunden um einen Anlauf zu erhalten)
+  mutate(Time_new = Time - Startzeitpunkt+2)
+
+head(data_red, 3)  %>% gt()
+
+#Nun sind alle Daten vor dem Startzeitpunkt negativ und alle danach positiv mit Relation zum ersten Lichtreiz
+#Hierfür fertigen wir eine Basis Sequenz an
+Sequenzdauer <- 31.51
+Sequenz <- seq(from = -2, to = Sequenzdauer -2 - 1/50, by = 1/50)
+tail(Sequenz)
+
+#Im nächsten Schritt soll eingeteilt werden im wievielten Durchlauf man sich befindet
+#Da wir hier auch Spalten herauslöschen, speichern wir die Daten zwecks leichterer Anpassbarkeit in eine neue Variable
+data_red2 <- data_red %>% 
+  #...Hierzu wird eine neue Spalte erstellt auf Basis der Time_new Spalte. Diese wird durch die Gesamtdauer eines Durchlaufs geteilt und aufgerundet
+  mutate(run = (Time_new %/% (Sequenzdauer))+1) %>% 
+  #...Nun werden alle Zeiten vor dem Startzeitpunkt (+2 Sekunden Anlaufphase) gelöscht und ebenso alle am Ende.
+  filter(run >=1 & run <=10) %>% 
+  #...Nun benötigt es eine neue Zeitspalte mit unserer Sequenz - hierfür gruppieren wir die Daten anhand der Durchläufe...
+  group_by(run) %>% 
+  #...Begrenzen die maximale Länge auf die Sequenz
+  slice_head(n = length(Sequenz)) %>% 
+  #...und fügen die Sequenzspalte hinzu
+  mutate(Time_run = Sequenz) %>% 
+  #...Abschließend benötigt es noch eine Einteilung ob wir einen roten oder einen blauen Lichtreiz vorliegen haben
+  mutate(Stimulus = case_when(run >=1 & run <= 5 ~ "red",
+                              run >5 & run <=10 ~ "blue")) %>% 
+  #...und wir entfernen unnötige Spalten aus dem Datensatz
+  select(-Time, -Diameter, -Time_new, Diameter = Diameter_med, Time = Time_run)
+
+#Hier der Anfang und das Ende des neuen Datensatzes
+head(data_red2, 3) %>% gt()
+tail(data_red2, 3) %>% gt()
+
+#Das Ergebnis könne wir wieder plotten, aufbauend auf PlotX
+PlotX$data <- data_red2
+Plot4 <- PlotX + 
+  #ergänzt Liniendiagramme
+  geom_line(aes(y=Diameter, 
+                #...Diese sollen für jeden Durchlauf neu gezeichnet werden...
+                group = run, 
+                #...und sich farblich abhängig des Stimulus differenzieren
+                col = Stimulus))+
+  #...Und wie oben benötigen wir wieder einen Lichtreizmarker
+  annotate("rect",
+    xmin = 0, xmax = 1, 
+    ymin = 0, ymax = Inf,
+     fill = "yellow2", alpha = 0.4)+
+  #Zudem muss die Farbskalierung zum Stimulus passen
+  scale_color_manual(values = c("blue", "red"))+
+  #Wir möchten zudem die Legende im Titel unterbringen, dazu müssen wir die Legende entfernen und den Titel formulieren
+  guides(col = "none")+
+  labs(title = "Pupillendurchmesser abhängig der Zeit, dem Durchlauf, und dem <span style = 'color:red'>roten</span> oder <span style = 'color:blue'>blauen</span> Stimulus")
+
+Plot4
+```
+
+### Skalierung
+
+Als nächstes erfolgt die Skalierung der Kurven. Damit bewegen wir uns von den Pupillendurchmessern in Pixeln weg und kommen zu relativen Größen. Dabei haben wir zwei Möglichkeiten:
+
+1.  Wir können zum einen skalieren auf 0-100%, wobei 0% einem Pupillendurchmesser von 0 entspricht, d.h. theoretisch ist. 100% entspricht dem maximalen Pupillendurchmesser im Durchlauf.
+2.  Die zweite Möglichkeit skaliert von 0-100%, wobei 0% dem kleinsten Pupillendurchmesser im Durchlauf entspricht, 100% dem größten.
+
+Bei Möglichkeit 1 wird die relative Konstriktion zwischen rot und blau erhalten. D.h. wenn ein Stimulus zu stärkerer Konstriktion führt, ist das aus den Daten ersichtlich. Möglichkeit 2 relativiert dies - denn hier ist jeder kleinste Durchmesser in jedem Durchgang gleich groß, nämlich 0%. Beide Möglichkeiten haben ihre Vor- und Nachteile bzw. ihren theoriebasierten Rückhalt.
+
+::: panel-tabset
+#### Skalierung 1
+
+```{r}
+#Wir beginnen mit einer neuen Variable für die skalierten Daten, der als Basis den letzten Datenstand besitzt
+data_scaled <- data_red2 %>% 
+  #Hier fügen wir eine neue Spalte ein, die den größten Durchmesser jeden Durchlaufs findet. von den letzten Datenverarbeitungen sind die Daten noch gruppiert je Durchlauf
+  mutate(Diameter_max = max(Diameter)) %>% 
+  #Dann wird der relative Durchmesser gebildet, indem der Durchmesser durch den maximalen Durchmesser geteilt und mit 100 multipliziert wird (Prozentwerte)
+  mutate(Diameter = Diameter/Diameter_max*100)
+
+head(data_scaled, 3) %>% gt()
+
+#Und wieder geht es darum den Output zu visualisieren
+PlotX$data <- data_scaled
+#Hierbei können wir dem PlotX auch weitere wichtige Elemente hinzufügen, die wir bereits erstellt haben
+PlotX <- PlotX +   
+  annotate("rect",
+    xmin = 0, xmax = 1, 
+    ymin = 0, ymax = Inf,
+     fill = "yellow2", alpha = 0.4)+
+  scale_color_manual(values = c("blue", "red"))+
+  guides(col = "none")+
+  #Und auch die y-Achse muss sich ändern, da wir ein neues Maß verwenden
+  labs(y = "Pupillendurchmesser (%)")
+
+Plot5 <- PlotX + 
+    #ergänzt Liniendiagramme
+  geom_line(aes(y=Diameter, 
+                #...Diese sollen für jeden Durchlauf neu gezeichnet werden...
+                group = run, 
+                #...und sich farblich abhängig des Stimulus differenzieren
+                col = Stimulus))+
+    #Titel
+  labs(title = "Relativer Pupillendurchmesser (%) abhängig von Durchlauf, Zeit und dem <span style = 'color:red'>roten</span> oder <span style = 'color:blue'>blauen</span> Stimulus")
+
+Plot5
+
+```
+
+#### Skalierung 2
+
+```{r}
+#Die Basis für unser weiteres Vorgehen ist die Skalierung 1, wir machen lediglich einen weiteren Transformationsschritt. Die restlichen Elemente bleiben gleich.
+data_scaled2 <- data_scaled %>% 
+  #Hierzu ziehen wir den minimalen Durchmesser jedes Durchlaufs vom aktuellen Durchmesser ab und teilen dies durch den Unterschied zwischen kleinstem und größtem Durchmesser (*100 um auf Prozent zu kommen)
+  mutate(Diameter = (Diameter - min(Diameter))/(max(Diameter) - min(Diameter))*100)
+
+head(data_scaled2, 3) %>% gt()
+
+Plot6 <- Plot5
+Plot6$data <- data_scaled2
+Plot6
+
+```
+:::
+
+### Mittlerer Kurvenverlauf
+
+Nun können wir den mittleren Kurvenverlauf ermitteln, basierend auf den je fünf Wiederholungen. Für Skalierung 1 kann es zudem sinnvoll sein, einen unteren Grenzwert der Darstellung zu wählen, damit der Graph nicht zu klein ausfällt. Dies erfolgt mit dem Befehl:
+
+`lower <- XX`
+
+::: panel-tabset
+#### Skalierung 1
+
+```{r}
+#| message: false
+
+#Skalierung für den unteren Wert im Plot
+lower <- 50
+
+#Erstellen wir zunächst eine neue Variable für die Daten und erstellen diese auf Basis der alten
+data_mittel <- data_scaled %>% 
+  #Wir möchten abhängig des Stimulus und der Zeit den mittleren Durchmesser der Pupille wissen. Die Information über die Durchläufe geht dabei verloren
+  group_by(Stimulus, Time) %>% 
+  summarize(            
+            #Zudem hätten wir gerne Grenzwerte der einzelnen Kurvenverläufe
+            upper = max(Diameter),
+            lower = min(Diameter),
+            #Zum Schluss wird einfach der Mittelwert berechnet und damit die Einzeldurchmesser ersetzt
+            Diameter = mean(Diameter))
+
+head(data_mittel, 3) %>% gt()
+
+#Und wie immer geht es darum den Output zu visualisieren
+PlotX$data <- data_mittel
+
+Plot7 <- PlotX + 
+    #Es kann auch helfen die Bandbreite der Einzeldaten zu zeigen, in diesem Fall der Spannweite
+  geom_ribbon(aes(ymin =  lower, ymax = upper, fill = Stimulus), alpha = 0.15)+
+  #Ergänzung der Mittelwerte
+  geom_line(aes(y=Diameter, col = Stimulus), lwd=1)+
+  #Titel
+  labs(title = "Mittlerer Pupillendurchmesser für die Stimuli <span style = 'color:red'>rot</span> und <span style = 'color:blue'>blau</span>") +
+  scale_fill_manual(values = c("blue", "red"), guide = "none")
+  
+Plot7+  
+  #Zudem verändern wir den Betrachtungsbereich um niedrige Durchmesser auf der Y-Achse auszublenden und auf die Daten zu fokussieren.
+  coord_cartesian(ylim = c(lower, NA))
+
+
+```
+
+#### Skalierung 2
+
+```{r}
+#Der Ablauf hier entspricht dem der anderen Skalierung - lediglich die Basisvariable ist eine andere
+data_mittel2 <- data_scaled2 %>% 
+  #Wir möchten abhängig des Stimulus und der Zeit den mittleren Durchmesser der Pupille wissen. Die Information über die Durchläufe geht dabei verloren
+  group_by(Stimulus, Time) %>% 
+  summarize(            
+            #Zudem hätten wir gerne Grenzwerte der einzelnen Kurvenverläufe
+            upper = max(Diameter),
+            lower = min(Diameter),
+            #Zum Schluss wird einfach der Mittelwert berechnet und damit die Einzeldurchmesser ersetzt
+            Diameter = mean(Diameter))
+
+head(data_mittel2, 3) %>% gt()
+
+Plot8 <- Plot7
+Plot8$data <- data_mittel2
+Plot8
+
+```
+:::
+
+## Parameter extrahieren
+
+Kurvenverläufe wie wir sie im letzten als Mittelwerte gebildet haben sind visuell gut zu interpretieren. In Veröffentlichungen und Abschlussarbeiten geht es häufig neben diesen qualitativen Darstellungen auch um die quantitative Auswertung. Dazu müssen Parameter aus den Daten extrahiert werden. Der für die chromatische Pupillometrie typischste Parameter ist die Konstriktion 6 Sekunden nach Lichtreizende - im Vergleich roter zu blauer Stimulus ($P_6$). Weiterhin ist die `Area under the Curve` ($AUC$) ein typischer Vergleichsparameter. Dabei werden einfach die Flächen unter der roten und der blauen Kurve (nach Lichtreizende) miteinander verglichen. Das Konstriktionsmaximum der Pupillen ($C_{max}$) wird auch gelegentlich verglichen, wobei es kein spezifischer Marker für den Einfluss der ipRGC auf die Pupille ist. Wir werfen in den nächsten Abschnitten einen Blick auf alle diese Parameter, die dann im folgenden Kapitel auch statistisch ausgewertet werden. Aus Gründen der Einfachheit gehen wir im folgenden nur noch auf die Skalierungsmethode 1 ein.
+
+```{r}
+#Generieren wir zunächst die drei Parameter für die Mittelwertskurven. Das erlaubt eine schönere Darstellung
+data_mittel_params <- data_mittel %>% 
+  #Die Mittelwertsdaten sind bereits gruppiert nach dem Stimulus. Dies muss also nicht extra erfolgen
+  summarize(
+        #Die Fläche unterhalb der Kurve ist leicht zu bestimmen. Wir kumulieren hier lediglich alle Durchmesser auf und teilen die Summe durch die Samplingrate von 50 Messungen pro Sekunde. Wir beschränken uns hier auf die Fläche nach dem Lichtreizende, d.h. alles über Sekunde 1. Im Ergebnis erhalten wir %*Sekunden als Fläche. Man kann diese folgendermaßen interpretieren: 1 %*Sekunde ist eine maximal geöffnete Pupille für eine Sekunde - oder eine halb geöffnete Pupille für zwei Sekunden. Ein größerer Wert entspricht einer weiter geöffneten Pupille über den gesamten Messverlauf hinweg
+    AUC = sum(Diameter[Time >= 2])/50,
+    #Die Konstriktion 6 Sekunden nach Lichtreizende ist ebenfalls leicht zu bestimmen. Wir nehmen alle Durchmesser die größer gleich bei 7 Sekunden liegen (6 Sekunden + Lichtreizdauer 1 S) und kleiner 8 Sekunden sind. Von diesen Werten nehmen wir den Durchschnitt
+    P_6 = mean(Diameter[Time >= 7 & Time < 8]))
+
+    #Das Konstriktionsmaximum ist vermeintlich leicht - es ist lediglich der minimale Pupillendurchmesser zu suchen - allerdings ist dieser nicht in jedem Durchlauf an der gleichen Zeit. Deshalb kann es falsch sein, den minimalen Durchmesser vom Mittelwert zu nehmen. Stattdessen nehmen wir den minimalen Durchmesser jedes Durchlaufs und mitteln diesen Wert
+data_mittel_params2 <- data_scaled %>% 
+  group_by(Stimulus, run) %>% 
+  summarize(
+    C_max = min(Diameter),
+    #Dazu noch die Zeitpunkte, zu denen C_max auftritt
+    X_C_max = Time[Diameter == min(Diameter)],
+    .groups = "drop"
+  ) %>% 
+  group_by(Stimulus) %>% 
+  summarize(across(.fns = mean)) %>% 
+  select(-run)
+
+data_mittel_params <- left_join(data_mittel_params, data_mittel_params2, by = "Stimulus") %>% relocate(P_6, .after = X_C_max)
+
+#Darstellung der Parameter in einer Tabelle, exclusive des Hilfsparameters X_C_max
+Table0 <- 
+  data_mittel_params %>% 
+  select(!X_C_max) %>% 
+  gt(caption = "Parameteraufstellung") %>% 
+  #Diese Befehle sorgen für eine passende Formatierung der Zahlen
+  fmt_percent(columns = 3:4, decimals = 1, scale_values = FALSE) %>% 
+  fmt_number(columns = 2, decimals = 0) %>% 
+  #Dieser Befehl passt die Bezeichnung der Spalten an
+  cols_label(C_max = md("C<sub>max</sub>"),
+             P_6 = md("P<sub>6</sub>")) %>% 
+  #Dieser Befehl färbt die Stimulusbezeichnungen entsprechend ein
+  data_color(columns = 1, fn = \(x) .[["_data"]]$Stimulus, apply_to = "text")
+
+Table0
+
+```
+
+::: panel-tabset
+### Konstriktionsmaximum
+
+Wir fangen mit einem einfachen Parameter an: $C_{max}$. Er ist schlicht das Minimum der beiden Stimuli.
+
+```{r}
+
+#Da wir diesen Plot später mit anderer Labelgröße verwenden wollen, speichern wir zudem nicht direkt den Plot, sondern erstellen eine Funktion mit der Schriftgröße als Argument. So können wir später leicht die Schriftgrößen ändern
+Plot_par1 <- function(fontsize = 12) {
+  #Wir beginnen beim Plot7, den wir als Basis verwenden wollen...
+  Plot7 + coord_cartesian(ylim = c(50, NA)) + 
+  #...und grauen den gesamten Plot aus - dies erfolgt durch einen gghighlight-Befehl.
+  gghighlight(Diameter == 0, unhighlighted_params = list(colour = NULL, fill = NULL, alpha = 0.2)) +
+  #...Dann wird eine Anmerkung hinzugefügt, diese bezieht ihre Daten aus der Parameter-Variable
+  geom_mark_circle(data = data_mittel_params, 
+                   #...Und verwendet die Positionen von C_max, und verwendet die Einfärbungen, die bereits im Hauptplot definiert wurden
+                   aes(y = C_max, x = X_C_max, fill = Stimulus, col = Stimulus, 
+                       #...Als Label wollen wir den gerundeten Wert mit einem Prozentzeichen
+                       label = paste0(round(C_max),"%")), 
+                   #...die erzeugten Kreise mit der Standardansicht sind et
+                   expand = unit(2, "mm"),
+                   con.type = "straight",
+                   label.fontsize = fontsize)+
+  labs(title = "Minmialer Pupillendurchmesser (max. Konstriktion C<sub>max</sub>) abhängig von dem <span style = 'color:red'>roten</span> oder <span style = 'color:blue'>blauen</span> Stimulus")}
+
+Plot_par1()
+
+```
+
+### 6s PIPR
+
+Auch $P_6$ ist ein konzeptionell einfacher Parameter.
+
+```{r}
+#Auch hier erstellen wir wieder eine Funktion
+Plot_par2 <- function(fontsize = 12) {
+  #Wir beginnen beim Plot7, den wir als Basis verwenden wollen...
+  Plot7 + coord_cartesian(ylim = c(50, NA)) + 
+  #...und grauen den gesamten Plot aus - dies erfolgt durch einen gghighlight-Befehl.
+  gghighlight(Diameter == 0, unhighlighted_params = list(colour = NULL, fill = NULL, alpha = 0.2)) +
+  #Eine vertikale Indikatorlinie zeigt die 6 Sekunden nach Lichtreizende an
+  geom_vline(aes(xintercept = 7), lty = 2)+
+  #...Dann wird eine Anmerkung hinzugefügt, diese bezieht ihre Daten aus der Parameter-Variable
+  geom_mark_circle(data = data_mittel_params, 
+                   #...Und verwendet die Positionen von C_max, und verwendet die Einfärbungen, die bereits im Hauptplot definiert wurden
+                   aes(y = P_6, x = 7, fill = Stimulus, col = Stimulus, 
+                       #...Als Label wollen wir den gerundeten Wert mit einem Prozentzeichen
+                       label = paste0(round(P_6),"%")), 
+                   #...die erzeugten Kreise mit der Standardansicht sind et
+                   expand = unit(2, "mm"),
+                   con.type = "straight",
+                   label.fontsize = fontsize)+
+  #Titel
+  labs(title = "Pupillendurchmesser/Konstriktion 6s nach Lichtreizende (P<sub>6</sub>) abhängig von dem <span style = 'color:red'>roten</span> oder <span style = 'color:blue'>blauen</span> Stimulus")+
+  #Die Zeit auf der x-Achse sollte 7 Sekunden benennen
+  scale_x_continuous(breaks = c(seq(0,30, by = 10), 7))
+}
+
+Plot_par2()
+```
+
+### Area under the Curve
+
+Schließlich kommen wir noch zu $AUC$. Dieser Wert ist etwas komplexer, macht aber letztlich nur eine Aussage über den Gesamtverlauf der Kurve, d.h. ob die Kurve über den gesamten Zeitbereich eher hohe oder niedrige y-Werte aufgewiesen hat - unabhängig des Zeitbereichs. Man kann das Ergebnis im vorliegenden Fall folgendermaßen interpretieren: 1 %\*Sekunde ist eine maximal geöffnete Pupille für eine Sekunde - oder eine halb geöffnete Pupille für zwei Sekunden. Ein größerer Wert entspricht einer weiter geöffneten Pupille über den gesamten Messverlauf hinweg.
+
+```{r}
+
+AUC_data <- data_mittel %>% filter(Time >=1) %>% select(Stimulus, Diameter, Time) %>% pivot_wider(names_from  = Stimulus, values_from = Diameter)
+
+Plot_par3 <- function() {
+  Plot7 + coord_cartesian(ylim = c(50, NA)) + 
+  #...und grauen den gesamten Plot aus - dies erfolgt durch einen gghighlight-Befehl.
+  gghighlight(Diameter == 0, unhighlighted_params = list(colour = NULL, fill = NULL, alpha = 0.2)) +
+  #Ergänzung der Flächen
+  geom_ribbon(data = AUC_data, aes(x = Time, ymin = blue, ymax = red), col = "black", fill = "lightgreen", alpha = 1, inherit.aes = FALSE)+
+  # geom_ribbon(data = AUC_data, aes(x = Time, ymin = 0, ymax = blue),fill = "blue", alpha = 0.5, inherit.aes = FALSE)+
+  #Titel
+  labs(title = "<span style = 'color:lightgreen'>Flächenunterschied</span> der beiden Kurven (AUC-Unterschied) abhängig von dem <span style = 'color:red'>roten</span> oder <span style = 'color:blue'>blauen</span> Stimulus")
+}
+
+Plot_par3()
+
+```
+:::
+
+## Statistische Auswertung
+
+### Auswertung von Parametern
+
+Im nächsten und vorletzten Schritt werden die unterschiedlichen Parameter statistisch ausgewertet, mit dem sogenannten `Wilcoxon-Mann-Whitney-U-Test`. Mit diesem wollen wir prüfen, ob es signifikante Unterschiede zwischen den Parametern bei blauem oder bei rotem Lichtstimulus gibt.
+
+```{r}
+
+#Zunächst benötigen wir einen Datensatz, der unsere Parameter für jeden Durchlauf erhebt. Wir beginnen dazu mit den skalierten Daten und gruppieren diese für Stimulus und Durchlauf (run).
+data_stats <- data_scaled %>% 
+  group_by(Stimulus, run) %>% 
+  #...Dann erstelle wir die Parameter nach dem gleichen Stil wie oben
+  summarize(
+    C_max = min(Diameter),
+    P_6 = mean(Diameter[Time >= 7 & Time < 8]),
+    AUC = sum(Diameter[Time >= 2])/50,
+    .groups = "drop"
+  ) %>% 
+  #...Die entstehenden Daten nehmen jeweils eine eigene Spalte ein - aus Gründen der Einfachheit möchten wir die Daten im Long-Format haben. Das heißt, eine Beobachtung je Zeile
+  pivot_longer(cols = c(-Stimulus, -run), names_to = "Parameter") %>% 
+  #...schließlich muss die Stimulus-Variable in einen Faktor umgewandelt werden - dies ist für die spätere Auswertung wichtig
+  mutate(Stimulus = factor(Stimulus))
+
+head(data_stats) %>% gt()
+
+#Dieser Datensatz wird "verpackt" (nest), damit die Daten (Stimulus, value und run) in einer Zelle liegen
+Stat_Analysis <- data_stats %>% nest(data = -Parameter)
+
+#Dieser neue Datensatz hat nur drei Zeilen, je einen pro Parameter, und nur zwei Spalten - eine für den Parameternamen und eine für die daten
+Stat_Analysis %>% gt()
+
+#Nun erstellen wir eine Formel, mit der die Daten ausgewertet werden. Der Wert des jeweiligen Parameters (value) soll abhängig des Stimulus untersucht werden
+Formel <- value ~ Stimulus
+
+#Mit dieser Formel führen wir den Wilcoxon-Test durch. Hierzu benötigen wir zunächst unsere Daten und erstellen eine neue Spalte für die Testergebnisse
+Stat_Analysis <- Stat_Analysis %>% 
+  rowwise() %>% 
+  mutate(
+    Wilcox = 
+      #In dieser Spalte wird ein Test ausgeführt, basierend auf den Daten in data. Der Test in ein Wilcoxon-Test, die Formel ist wie vohrer spezifiziert, und wir möchten 95% Konfidenzintervalle ausgegeben bekommen.
+      list(wilcox.test(formula = Formel, data = data, conf.int = TRUE, exact = TRUE)),
+    # Die Ergebnisse des Tests werden zudem schöner mit dem tidy-Befehl aufbereitet und die Tabelle wird auf eine Ebene (exkl. der Daten) geglättet mit dem unnest-Befehl
+    Wilcox = tidy(Wilcox)) %>% 
+  unnest(Wilcox)
+
+# Diese Ergebnisse bereiten wir als Tabelle auf
+Table <- Stat_Analysis %>% arrange(Parameter) %>% 
+  select(Parameter, estimate, conf.low, conf.high, p.value) %>% 
+  #für die Tabelle müssen die Parameterbezeichnungen noch angepasst werden
+  mutate(Parameter = recode(Parameter, C_max = ("C<sub>max</sub>"),
+                             P_6 = ("P<sub>6</sub>"))) %>% 
+  gt(caption = md("Auswertung des *Exakten Wilcoxon-Rang-Summen Test*"),
+     rowname_col = "Parameter") %>% 
+  #Diese Befehle sorgen für eine passende Formatierung der Zahlen
+  fmt_percent(columns = 2:4, rows = 2:3, decimals = 1, scale_values = FALSE) %>% 
+  fmt_number(columns = 2:4, rows = 1, decimals = 1) %>% 
+  fmt_scientific(columns = 5) %>% 
+  #Dann werden die Spaltennamen angepasst
+  cols_label(estimate = "Median-Unterschied (95% CI)",
+             p.value = "p-Wert") %>% 
+  #Die Parameterdifferenz wird um das Konfidenzintervall ergänzt
+  cols_merge(c("estimate", "conf.low", "conf.high"), pattern = "{1} ({2},{3})" ) %>% 
+  #Es folgen Befehle um Spalten und Zeilennamen Fett zu drucken
+    tab_style(style = list(
+      cell_text(weight = "bold")),
+      locations = list(cells_column_labels(), cells_stub())
+    ) %>% 
+  #Schließlich müssen die Parameterbezeichnungen angepasst werden - dies erfolgt über eine Markdown-Formatierung
+  fmt_markdown(columns = Parameter)
+
+Table 
+```
+
+Diese signifikanten Unterschiede können wir auch zeigen mit einem kombinierten Differenz- und Punktwolkenplot.
+
+```{r}
+
+#Hierzu benötigen wir zunächst einen Hilfsdatensatz. Diesen manipulieren wir so, dass wir Pro Parameter eine Spalte mit dem roten und eine mit dem blauen Stimulus haben
+Stat_Mittel <- data_mittel_params %>% select(-X_C_max) %>% 
+  pivot_longer(cols = -Stimulus, names_to = "Parameter") %>% 
+  pivot_wider(names_from = "Stimulus") %>% 
+      #für den Plot müssen die Parameterbezeichnungen noch angepasst werden
+  mutate(Parameter = recode(Parameter, C_max = ("Cmax (%)"),
+                             P_6 = ("P6 (%)"),
+                            AUC = "AUC (%*s)")) %>% 
+  #Zudem brauchen wir die Mittelwertsunterschiede - diese holen wir direkt aus der erstellten Tabelle heraus
+  mutate(Dif = Table %>% extract_cells(columns = estimate),
+         Mittel = (blue+red)/2)
+
+#Die Label im Plot sollen ebenfalls farbig sein, wie - das legen wir hier fest.
+label_col <- c("<span style = 'color:red'>rot</span>", "<span style = 'color:blue'>blau</span>")
+
+#Im Anschluss nehmen wir zunächst wieder unsere Daten für die statistische Auswertung und verwerfen die Ergebnisse der statistischen Tests
+Stat_Analysis %>% select(Parameter, data) %>% unnest(data) %>% 
+    #für den Plot müssen die Parameterbezeichnungen noch angepasst werden
+  mutate(Parameter = recode(Parameter, C_max = ("Cmax (%)"),
+                             P_6 = ("P6 (%)"),
+                            AUC = "AUC (%*s)"),
+         Stimulus = relevel(Stimulus, ref = "red")) %>% 
+  #Diese Daten füttern wir in einen Plot, bei dem auf der x-Achse der Stimulus, auf der y-Achse der Wert gezeigt wird. Für diese fügen wir je eine Punktwolke und einen Boxplot hinzu.
+  ggplot(aes(x=Stimulus, y = value, col = Stimulus)) +
+  geom_jitter(width = 0.2) +
+  guides(col = "none")+
+  #Titel
+  labs(title = "Parameterunterschiede (95% CI)")+
+  #...Den enstehenden Plot teilen wir auf in Facetten abhängig des Parameters
+  facet_wrap(~Parameter, scales = "free", strip.position = "left")+
+  #...Nun fügen wir die Mittelwertsunterschiede hinzu
+  geom_errorbar(data = Stat_Mittel, aes(ymin = blue, ymax = red, x = 1.5), 
+                width = 0.5, inherit.aes = FALSE)+
+  geom_text(data = Stat_Mittel, aes(x=1.3, y = Mittel, label = Dif), angle = 90, inherit.aes = FALSE)+
+  #...Dann folgen einige Befehle zum Styling des Plots
+  theme_cowplot()+
+  labs(y = NULL, x = NULL)+
+  scale_x_discrete(labels = label_col)+
+  scale_color_manual(values = c("red", "blue"))+
+  theme(
+    strip.text.y = element_markdown(), 
+        strip.placement = "outside", 
+        strip.background = NULL,
+    axis.text.x.bottom = element_markdown())
+
+
+```
+
+### Auswertung der Gesamtkurve
+
+Anstatt einzelne Parameter aus den Kurven zu extrahieren, kann auch die Kurve als Gesamtes untersucht werden. Um die Komplexität des zugrundeliegenden Modells festzulegen wird ein sogenannter `k` Wert gegeben. Passen Sie diesen ggf. an, sofern das Ergebnis nicht zufriedenstellend ist. Der Befehl:
+
+`k <- XX`
+
+```{r}
+#Wir verwenden hierfür unseren skalierten Datensatz. Lediglich die Spalte mit dem maximalen Durchmesser wird entfernt. Zudem benötigen wir einen Faktor für den Stimulus und den Durchlauf - dieser ist in den skalierten Daten noch nicht enthalten. Ausserdem verringern wir die Datenmenge etwas, indem wir das Messpunktintervall auf 1/3 Sekunde verringern.
+data_scaled3 <- data_scaled %>% ungroup() %>% 
+  select(-Diameter_max) %>%
+  group_by(Stimulus, run, (Time) %/% (1/3)/3) %>%
+  summarize(Diameter = mean(Diameter)) %>%
+  rename(Time = "(Time)%/%(1/3)/3") %>%
+  mutate(Stimulus = factor(Stimulus, levels = c("red", "blue")),
+         run = factor(run)) %>% 
+  arrange(run)
+
+#Hier ein Blick auf den entstandenen Datensatz
+data_scaled3 %>% head() %>% gt()
+
+#Dann wird wieder eine Formel erstellt. Wir können die Hauptformel mit unterschiedlicher Komplexität gestalten. Hierfür ist das k-Argument relevant. Wenn der fitting-Prozess Probleme bereitet, kann k erhöht oder verringert werden. (z.B. 50, 40, 35, 55, usw.)
+k <- 53
+
+#Die Formel besagt, dass der Durchmesser der Pupille (Diameter) abhängt davon ob der Stimulus gerade rot oder blau ist (Stimulus) und davon, welchen Durchgang wir gerade haben (s(run, bs = "re")). Der Zusammenhang mit dem Durchgang ist als sogenannter "random effect" codiert - was das bedeutet können wir hier nicht im Detail erklären, im wesentlichen berücksichtigt es aber, dass jeder neue Durchgang einen etwas anderen mittleren Durchmesser haben kann.
+Formel2 <- Diameter ~ Stimulus + s(run, bs = "re") + 
+  #Der letzte Term sagt aus, dass wir eine Kurve über die Zeit hinweg erwarten, die sich in ihrem Verlauf davon unterscheidet ob wir einen blauen oder roten Stimulus haben. Die Basis für die Kurvenerzeugung sind sogenannte "cubic regression splines" oder kurz "cr". Die Komplexität der Kurve (k) haben wir bereits vorher festgelegt - die Variable wird hier lediglich referenziert.
+  s(Time, by= Stimulus, bs ="cr", k = k)
+
+#Mit dieser Formel generieren wir ein Modell der Kurvenverläufe. Hierzu nutzen wir die bam Funktion, die eine schnellere Variante von gam ist - gam steht dabei für generalized additive model.
+Model <- bam(Formel2, 
+             #...Wir befüllen den Befehl mit unseren vorher zusammengestellten Daten...
+             data = data_scaled3, 
+             #...und legen einen Fehlertypus fest über den Familienbefehl. Die Student`t-Verteilung (scat) hat sich als robust für Pupillendaten gezeigt.
+             family = scat, 
+             #...Die nächsten beiden Befehle sind allgemeine Einstellungen für die Berechnung
+             method = "fREML", discrete = TRUE)
+
+#Das entstandende Modell hat noch ein Problem - Autokorrelation. Das heißt, die Fehlerwerte von zwei aufeinanderfolgenden Beobachtungen sind nicht unabhängig voneineander. Dies ist ein normaler Effekt bei Zeitserien. Wir begegnen dem, indem wir den Grad an Autokorrelation bestimmen...
+R1 <- start_value_rho(Model)
+#...und mit dieser den selben Modellbefehl wie vorher füttern. Dadurch wird ein sogeanntes lag1 Autoregressive Error-Modell eingefügt, das sich um die Autokorrelation weitestgehend kümmert
+Model <- bam(Formel2, data = data_scaled3, family = scat, method = "fREML", rho = R1, discrete = TRUE)
+
+```
+
+Das entstande Modell können wir nun verwenden um Visualisierungen zu erstellen und Vorhersagen zu treffen. Es folgen zwei Plots, welche die Modellvorhersage visualieren. Der nächste Plot erzeugt eine Visualisierung der beiden Kurvenverläufe.
+
+```{r}
+plot_smooth(
+  Model,
+  view = "Time",
+  plot_all = "Stimulus",
+  rug = F,
+  n.grid = 200,
+  col = c("red", "blue"),
+  main = "Modellvorhersage für die Kurvenverläufe"
+)
+```
+
+Der folgende Plot hingegen zeigt eine Visualisierung der **Unterschiede** zwischen den beiden Kurvenverläufen anzeigt, inkl. Konfidenzintervallen. In den Bereichen, wo die Konfidenzintervalle 0 nicht einschließen, kann davon ausgegangen werden, dass die Kurven abhängig des Stimulus unterschiedlich verlaufen. Das zugrundeliegende Konfidenzintervall basiert auf Simulationen möglicher Kurven, die den gegebenen Beobachtungen und Parametern zugrundeliegen können, wovon dann in jedem Zeitbereich 95% aller Kurven eingeschlossen werden. Die Methode ist damit sehr robust gegen eine Kumulation von Fehlern, wie man es bei klassischer Testwiederholung kennt (bspw. wenn man auf jeden Zeitpunkt einen Wilcoxon-Test anwenden würde).
+
+```{r}
+#Dieser Plot erzeugt eine Visualisierung der Unterschiede zwischen den beiden Stimuli
+plot_diff(Model,
+          view = "Time",
+          comp = list(Stimulus = c("red", "blue")),
+          sim.ci = TRUE)
+
+```
+
+#### Modelldiagnostik
+
+Schlussendlich dürfen Modelle (das gilt für alle Arten von Modellen) nur ausgewertet werden, wenn ihre Voraussetzungen erfüllt sind. Hierfür gibt es verschiedene Diagnoseinstrumente, die im folgenden kurz gezeigt, aber nicht näher erläutert werden.
+
+```{r}
+#Zusammenfassung des Modells
+summary(Model)
+#Darstellung aller Modellparameter
+plot.gam(Model, shade = TRUE, residuals = TRUE, all.terms = TRUE, scale = 0, pages = 1)
+#Modelldiagnostik für das Modell - insbesondere der Fehlerwerte
+gam.check(Model, rep = 500)
+#Autokorrelationsplot
+acf_resid(Model)
+
+```
+
+## Output aufbereiten
+
+Im letzten Schritt müssen unsere Ergebnisse ansprechend aufbereitet und zusammengefasst werden. Mit den nachfolgenden Befehlen wir ein eigenständiges PDF mit einer Seite generiert, welches die wichtigsten Ergebnisse beinhaltet. Das PDF wird in den Grundordner dieses Dokuments gespeichert.
+
+Bitte legen Sie hierzu den Versuchsleiter-, Auswerter-, und Probandennamen fest. Die Befehle:
+
+`Versuchsleiter <- "Versuchsleitername"`
+
+`Proband <- "Probandenname"`
+
+`Auswerter <- "Auswertername"`
+
+```{r, include = FALSE}
+#Variablen für die Auswertung
+Versuchsleiter <- "Versuchsleiter"
+Proband <- "Proband"
+Auswerter <- "Auswerter"
+
+#Speichern der bisherigen Ergebnisse
+save.image(file="Workspace.RData")
+
+#Festlegen einiger temporärer Dateien
+filepath_tmp <- getwd()
+filename <- "Table.png"
+filename2 <- "Table0.png"
+
+#Rendern eines PDFs auf Basis eines eigenen Quarto-Dokuments, welches als PDF, nicht als HTML gespeichert wird. Dieses Dokument bekommt die vorher gespeicherten Ergebnisse übergeben
+quarto::quarto_render("Hilfsdatei.qmd",
+                      output_format = "pdf",
+                      output_file = "Pupille_Praktikum.pdf",
+                      execute_params = list(author = Versuchsleiter,
+                                            proband = Proband,
+                                            auswerter = Auswerter,
+                                            filepath_tmp = filepath_tmp,
+                                            filename = filename,
+                                            filename2 = filename2))
+
+#Löschen der entstandenen temporären Dateien
+L_Dateien <- c(
+  paste0(filepath_tmp, "/", filename2),
+  paste0(filepath_tmp, "/", filename),
+  paste0("Workspace.RData")
+)
+walk(L_Dateien, file.remove)
+
+# rmarkdown::render("Hilfsdatei.rmd",
+#                   output_file = "Pupille_Praktikum.pdf",
+#                       params = list(author = Versuchsleiter,
+#   proband= Proband))
+
+```
+
+<iframe src="Pupille_Praktikum.pdf" width = "100%" height = "1050px" data-external="1"></iframe>
+

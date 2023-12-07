@@ -1,0 +1,182 @@
+---
+format: 
+  pdf: 
+    mainfont: "Source Sans Pro"
+    sansfont: "Source Sans Pro"
+    geometry:
+      - top=0.5in
+      - right=0.75in
+      - bottom=0.4in
+      - left=0.75in
+    number-sections: true
+    include-in-header: 
+      - "report-header.tex"
+    toc: false
+editor: source
+execute:
+  warning: false
+  echo: false
+params:
+  author: "Versuchsleiter"
+  proband: "Proband"
+  auswerter: "Auswerter"
+  filepath_tmp: "`r getwd()`"
+  filename: "Table.png"
+  filename2: "Table0.png"
+---
+\sffamily
+\thispagestyle{empty}
+\color{HM}
+\includegraphics[width=4cm]{HM_Schriftzug_Logo_rot_RGB.pdf}\hfill\large\texttt{Praktikums-Ausarbeitung}\textbf{: Chromatische Pupillometrie}\normalsize
+\vspace{-0.2in}
+\rule{17.78cm}{0.5mm}
+
+```{r setup, include=FALSE}
+library(cowplot)
+library(tidyverse)
+library(mgcv)
+library(gt)
+library(ggtext)
+library(itsadug)
+library(gghighlight)
+library(ggforce)
+library(patchwork)
+library(png)
+load(file="Workspace.RData")
+theme_set(theme_cowplot(font_size = 10.5, font_family = "sans"))
+```
+
+
+```{r, echo=FALSE, fig.height = 4.8, fig.width = 6.5}
+#| fig-align: "center"
+Plot9 <- Plot7+coord_cartesian(ylim = c(50, NA))+theme_cowplot(font_size = 10.5, font_family = "sans") + theme(plot.title = element_textbox_simple(margin = margin(b=10)), plot.margin = margin(t=1))
+
+Diff_model <- plot_diff(Model,
+          view = "Time",
+          comp = list(Stimulus = c("red", "blue")),
+          sim.ci = TRUE,
+          main = "Differenz der beiden Stimuli inkl. 95% CI (GAM-Modell)",
+          print.summary = FALSE,
+          ylab = "Pupillendurchmessers (%)",
+          xlab = "Zeit (s)",
+          plot = FALSE)
+
+Phase <- function(x) {
+  lagx <- lag(x)
+  count <- 0
+  output <- numeric(length(x))
+  for(i in seq_along(x)) {
+    if(x[i]==FALSE) {
+      output[i] <- NA
+    }
+    else if(x[i]==TRUE & lagx[i] == FALSE) {
+      count <- count+1
+      output[i] <- count
+    }
+    else {
+      output[i] <- count
+    }
+  }
+  output
+}
+
+Plot11 <- Diff_model %>% 
+  rowwise() %>% 
+  mutate(Sig = !between(0, left = est-sim.CI, right = est+sim.CI)) %>% 
+  ungroup() %>% 
+  mutate(Phase = Phase(Sig)) %>% 
+  ggplot(aes(x=Time, y = est)) + 
+  geom_hline(aes(yintercept =0))+
+  geom_ribbon(aes(ymin = est-sim.CI, ymax = est+sim.CI), alpha = 0.1)+ 
+  geom_ribbon(aes(ymin = est-sim.CI, ymax = est+sim.CI, group = Phase, fill = Sig))+ 
+  geom_line(linewidth=0.5)+
+  geom_line(linewidth=.75, aes(group = Phase, col = Sig))+
+  labs(y="Pupillendurchmesser (%)", x = "Zeit (s)", title = "<span style = 'color:darkgreen'>Signifikante</span> Differenz abhängig vom Stimulus (95% CI)")+
+  theme(plot.title = element_textbox_simple())+
+  scale_fill_manual(values=c("#54959300", "#00640020"), guide = "none")+
+  scale_color_manual(values=c("#54959300", "#006400"), guide = "none")
+
+Plot9 / Plot11
+
+
+```
+
+
+```{r, echo = FALSE, warning=FALSE, message = FALSE}
+#| fig-align: "center"
+
+Table0 %>% 
+  cols_hide(3:4) %>% 
+  tab_caption(caption = NA) %>% 
+  tab_options(column_labels.hidden = TRUE) %>% 
+  tab_style(style = cell_text(weight = "bold"), location = (cells_body())) %>%
+  gtsave(file = params$filename2, path = params$filepath_tmp)
+
+Tableinset <- png::readPNG(paste0(params$filepath_tmp, "/", params$filename2), native = TRUE)
+
+prop <- dim(Tableinset)[1]/dim(Tableinset)[2]
+
+Plot10 <- Plot_par3()+ labs(title = NULL) + inset_element(Tableinset, left = 0.4, bottom = 0.1, right = 1, top = 0.1+0.6*prop)
+
+Stat_Analysis %>% arrange(Parameter) %>% 
+  select(Parameter, estimate, conf.low, conf.high, p.value) %>% 
+  #für die Tabelle müssen die Parameterbezeichnungen noch angepasst werden
+  mutate(Parameter = recode(Parameter, C_max = ("C<sub>max</sub>"),
+                             P_6 = ("P<sub>6</sub>")),
+         across(.cols = c(2:4), ~round(.x, digits = 1)),
+         estimate = str_c(estimate, " (", conf.low, ", ", conf.high, ")"),
+         p.value=case_when(p.value > 0.05 ~ ">0.05",
+                           p.value < 0.001 ~ "<0.001",
+                           p.value < 0.01 ~ "<0.01",
+                           TRUE ~ "< 0.05")) %>% 
+   select(-conf.low, -conf.high) %>% 
+   {as_tibble(cbind(nms = names(.), t(.)))} %>% 
+   mutate(nms= recode(nms, 
+                      Parameter = "Par",
+                      estimate = "Diff",
+                      p.value = "p")) %>% 
+   rbind(c("Plot", NA, NA, NA)) %>% 
+  gt(rowname_col = "nms") %>% 
+  tab_header(title = md("Auswertung ausgewählter Parameter mit dem *Exakten Wilcoxon-Rang-Summen Test*")) %>% 
+     fmt_markdown(columns = 3:4, rows = 1) %>% 
+     text_transform(
+    locations = cells_body(columns = "V3", rows = 4),
+                 fn = function(x) {
+                  ggplot_image(Plot_par1(fontsize = 24) + labs(title = NULL), height = 240, aspect_ratio = 0.92)
+                 }) %>%
+     text_transform(
+    locations = cells_body(columns = "V4", rows = 4),
+                 fn = function(x) {
+                  ggplot_image(Plot_par2(fontsize = 24)+ labs(title = NULL), height = 240, aspect_ratio = 0.92)
+                 }) %>%
+        text_transform(
+    locations = cells_body(columns = "V2", rows = 4),
+                 fn = function(x) {
+                  ggplot_image(Plot10, height = 240, aspect_ratio = 0.92)
+                 }) %>%
+      tab_options(table.width = pct(100),
+                  column_labels.hidden = TRUE)  %>%
+   tab_style(style = cell_text(color="darkgreen"), locations = cells_body(columns =V2, rows = V2 %in% c("<0.05", "<0.01", "<0.001"))) %>% 
+   tab_style(style = cell_text(color="darkgreen"), locations = cells_body(columns =V3, rows = V3 %in% c("<0.05", "<0.01", "<0.001"))) %>% 
+   tab_style(style = cell_text(color="darkgreen"), locations = cells_body(columns =V4, rows = V4 %in% c("<0.05", "<0.01", "<0.001"))) %>% 
+  tab_footnote(md("Bezieht sich auf den geschätzten Median-Unterschied (mit 95% Konfidenzintervall) aus dem Wilcoxon-Test. Der Wert weicht ggf. von den Unterschieden der im Plot gezeigten *Mittelwerte* ab."),
+               locations = cells_stub(rows = 2)) %>% 
+  tab_footnote(md("AUC: Area under the curve; C<sub>max</sub>: Min. Pupillendurchmesser; P<sub>6</sub>: Durchmesser 6 Sekunden nach Lichtreizende")) %>% 
+  tab_style(style = cell_text(size = "large", weight = "bold"), location = cells_title(groups = "title")) %>%
+  tab_style(style = cell_text(weight = "bold"), location = list(cells_body(rows = 1))) %>%
+  tab_style(style = cell_text(size = 18), location = list(cells_body(rows = 1:3))) %>% 
+   gtsave(file = params$filename, path = params$filepath_tmp, vwidth = 800)
+
+```
+
+\begin{figure}[!h]
+  \centering
+  \includegraphics[width=6.3in]{`r paste0(params$filepath_tmp, "/", params$filename)`}
+\end{figure}
+
+
+\vfill
+\textcolor{HM}{\rule{17.78cm}{0.5mm}}
+
+\small\emph{Erstellt `r Sys.Date()`} 
+\hfill\small\emph{Versuchsleiter: `r params$author`, Proband: `r params$proband`, Auswerter: `r params$auswerter`}
